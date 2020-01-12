@@ -1,0 +1,161 @@
+---
+title: "Exploratory Analysis of Trump's Speeches"
+author: "Jan Schubert"
+date: "12 1 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 10)
+library(data.table)
+library(quanteda)
+library(dendextend)
+library(ggraph)
+```
+
+### About data
+This data contains 863 transcripts of speeches of Donald Trump. This dataset was created by scraping Trump’s speeches from YouTube and using Google voice assistant. [Here is the data](https://www.kaggle.com/binksbiz/mrtrump)
+
+
+### Cleaning
+Steaming and stopwords
+```{r}
+### Load data
+trump <- fread("../data/MrTrumpSpeeches.csv", stringsAsFactors = FALSE, sep = "~")
+# trump <- trump[sample(1:nrow(trump), 100), ]
+trump[, upload_date := as.Date(as.character(upload_date), format = "%Y%m%d")]
+trump[, year := as.factor(format(upload_date, format = "%Y"))]
+
+### ------------------------------
+### Cleaning
+trump_corpus <- corpus(trump$subtitles)
+docvars(trump_corpus, "Year")<- trump$year
+docvars(trump_corpus, "Title")<- trump$title
+
+## tokenization and cleaning
+toks <- 
+  tokens(trump_corpus, remove_numbers = TRUE, remove_punct = TRUE, remove_symbols = TRUE, remove_separators = TRUE) %>%
+  # tokens_wordstem %>%
+  tokens_remove(c(stopwords(language = "en"), "going", "thanks"))
+trump_dfm <- dfm(toks, verbose = TRUE)
+```
+
+
+### What are the most common words?
+```{r}
+# word frequency
+textplot_wordcloud(trump_dfm, min_count  = 100)
+barplot(topfeatures(trump_dfm), cex.names = .8, main = "10 most frequent words")
+```
+
+
+### Which words are used to talk about different topics?
+Bigram to identify key topics in Trump's speeches. 
+```{r}
+## ------------------------------------------
+## bigram
+trump_dfm2 <- dfm(toks, ngrams = 2)
+trump_dfm2 <- dfm_trim(trump_dfm2, min_termfreq = 10)
+# textplot_wordcloud(trump_dfm2)
+topfeatures(trump_dfm2)
+
+
+trump_dtm2_dt <- as.data.table(convert(trump_dfm2, to = "data.frame"))[, -1]
+trump_dtm2_dt <- colSums(trump_dtm2_dt)
+trump_dtm2_dt <- data.table(value = unname(trump_dtm2_dt),
+                            term = names(trump_dtm2_dt))
+trump_dtm2_dt[, c("term1", "term2") := tstrsplit(term, "_", fixed = TRUE)]
+trump_dtm2_dt$term <- NULL
+trump_dtm2_dt <- trump_dtm2_dt[, c("term1", "term2", "value")]
+
+bigram_graph <- igraph::graph_from_data_frame(trump_dtm2_dt[value > 200, ])
+set.seed(2017)
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point() +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1)
+```
+
+
+### How similar are speeches before and after Trump became the president? 
+Cluster analysis of similarty between speeches in 2018 and 2019.
+```{r}
+## ------------------------------------------
+## hierarchical clustering - get distances on normalized dfm
+tstat_dist <- textstat_dist(dfm_weight(trump_dfm, scheme = "prop")) %>%
+  as.dist()
+
+pres_cluster <- hclust(tstat_dist)
+# label with document names
+pres_cluster$labels <- trump$year
+
+dend <- as.dendrogram(pres_cluster)
+colors_to_use <- as.numeric(trump$year)
+colors_to_use <- colors_to_use[order.dendrogram(dend)]
+labels_colors(dend) <- colors_to_use
+# plot as a dendrogram
+plot(dend, xlab = "", sub = "", 
+     main = "Similarity of Speeches by Year", 
+     cex = .6)
+legend("topright", legend = c("2018", "2019"), col = c("red", "black"), pch = 19)
+```
+
+
+### Has the frequency of talking about migration changed in time? 
+Time series analysis of some key campaign topics.
+```{r}
+## time series immigration
+trump_dtm <- as.data.table(convert(trump_dfm, to = "data.frame"))[, -1]
+trump_dtm$date <- trump$upload_date
+trump_dtm[, year_month := format(date, format = "%Y-%m")]
+immigrants_summary <- trump_dtm[, .(immigration_count = sum(immigration)), by = year_month]
+immigrants_summary <- immigrants_summary[order(as.numeric(gsub("-","",year_month))), ]
+
+plot(immigrants_summary$immigration_count, type = "l", xaxt = "n",
+     ylab = "Count", main = "Count of word Immigration", xlab = "")
+points(immigrants_summary$immigration_count, pch = 16)
+axis(1, at=1:nrow(immigrants_summary), 
+     labels=immigrants_summary$year_month, 
+     las = 2, cex.axis = 0.8)
+```
+
+```{r}
+## time series health care
+health_care_summary <- trump_dtm[, .(hc_count = sum(health + care)), by = year_month]
+health_care_summary <- health_care_summary[order(as.numeric(gsub("-","",year_month))), ]
+
+plot(health_care_summary$hc_count, type = "l", xaxt = "n",
+     ylab = "Count", main = "Count of word Health and Care", xlab = "")
+points(health_care_summary$hc_count, pch = 16)
+axis(1, at=1:nrow(health_care_summary), 
+     labels=health_care_summary$year_month, 
+     las = 2, cex.axis = 0.8)
+```
+
+
+```{r}
+## time series trade
+trade_summary <- trump_dtm[, .(count = sum(trade)), by = year_month]
+trade_summary <- trade_summary[order(as.numeric(gsub("-","",year_month))), ]
+
+plot(trade_summary$count, type = "l", xaxt = "n",
+     ylab = "Count", main = "Count of word Trade", xlab = "")
+points(trade_summary$count, pch = 16)
+axis(1, at=1:nrow(trade_summary), 
+     labels=trade_summary$year_month, 
+     las = 2, cex.axis = 0.8)
+```
+
+
+```{r}
+## time series trade
+jobs_summary <- trump_dtm[, .(count = sum(job + jobs)), by = year_month]
+jobs_summary <- jobs_summary[order(as.numeric(gsub("-","",year_month))), ]
+
+plot(jobs_summary$count, type = "l", xaxt = "n",
+     ylab = "Count", main = "Count of word Jobs", xlab = "")
+points(jobs_summary$count, pch = 16)
+axis(1, at=1:nrow(jobs_summary), 
+     labels=jobs_summary$year_month, 
+     las = 2, cex.axis = 0.8)
+```
